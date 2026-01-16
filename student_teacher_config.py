@@ -14,3 +14,6 @@ def add_student_teacher_config(cfg):
     cfg.DET_THRESH = 0.8
     cfg.DISTILLATION_LOSS_WEIGHT = 0.0
     cfg.CONSISTENCY_REGULARIZATION = False
+    # 水下图像增强配置
+    cfg.UNDERWATER_ENHANCEMENT = False  # 是否在强增强中使用水下图像增强
+    cfg.UNDERWATER_ENHANCEMENT_WEIGHT = 0.1  # 水下增强损失的权重

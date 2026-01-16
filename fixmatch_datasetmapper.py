@@ -8,7 +8,7 @@ import pdb
 from detectron2.config import configurable
 from detectron2.data import detection_utils as utils
 from detectron2.data import transforms as T
-from custom_aug_impl import BBox_Erase, RandomShear
+from custom_aug_impl import BBox_Erase, RandomShear, UnderwaterEnhancement
 
 
 
@@ -197,6 +197,9 @@ class FixMatchDatasetMapper:
         if cfg.FIXMATCH_STRONG_AUG:
             st_augs.append(BBox_Erase(cfg.FIXMATCH_BBOX_ERASE_SCALE,
                                       cfg.FIXMATCH_BBOX_ERASE_RATIO))
+            # 添加水下图像增强
+            if cfg.UNDERWATER_ENHANCEMENT:
+                st_augs.append(UnderwaterEnhancement(prob=0.5))
 
         ret = {
             "is_train": is_train,

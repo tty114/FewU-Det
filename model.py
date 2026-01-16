@@ -19,6 +19,7 @@ from custom_modules.custom_mod import merge_gt_teacher
 from detectron2.layers import ShapeSpec
 from detectron2.modeling.box_regression import Box2BoxTransform
 from torchvision.ops import nms
+from underwater_enhancement_fix import build_underwater_enhancement_module
 
 import random
 import numpy as np
@@ -78,7 +79,9 @@ class FixMatchGeneralizedRCNN(GeneralizedRCNN):
         distillation_loss_weight: float = 0.0,
         cosine: bool = False,
         box2box_transform: Optional[Box2BoxTransform] = None,
-        consistency_reg=False
+        consistency_reg=False,
+        use_underwater_enhancement: bool = False,
+        underwater_enhancement_module: Optional[nn.Module] = None,
     ):
         """
         NOTE: this interface is experimental.
@@ -110,16 +113,25 @@ class FixMatchGeneralizedRCNN(GeneralizedRCNN):
         self.box2box_transform = box2box_transform
         self.det_thresh = det_thresh
         self.consistency_reg = consistency_reg
+        self.use_underwater_enhancement = use_underwater_enhancement
+        self.underwater_enhancement_module = underwater_enhancement_module.to(self.device) if underwater_enhancement_module is not None else None
 
     @classmethod
     def from_config(cls, cfg):
         backbone = build_backbone(cfg)
         output_shape = backbone.output_shape()
-        output_shape = {'p2': ShapeSpec(channels=2*output_shape['p2'][0], height=None, width=None, stride=4), \
-            'p3': ShapeSpec(channels=2*output_shape['p3'][0], height=None, width=None, stride=8), \
-            'p4': ShapeSpec(channels=2*output_shape['p4'][0], height=None, width=None, stride=16), \
-            'p5': ShapeSpec(channels=2*output_shape['p5'][0], height=None, width=None, stride=32), \
-            'p6': ShapeSpec(channels=2*output_shape['p6'][0], height=None, width=None, stride=64)}
+        output_shape = {'p2': ShapeSpec(channels=2*output_shape['p2'].channels, height=None, width=None, stride=4), \
+            'p3': ShapeSpec(channels=2*output_shape['p3'].channels, height=None, width=None, stride=8), \
+            'p4': ShapeSpec(channels=2*output_shape['p4'].channels, height=None, width=None, stride=16), \
+            'p5': ShapeSpec(channels=2*output_shape['p5'].channels, height=None, width=None, stride=32), \
+            'p6': ShapeSpec(channels=2*output_shape['p6'].channels, height=None, width=None, stride=64)}
+        use_uw = getattr(cfg, 'UNDERWATER_ENHANCEMENT', False)
+        uw_module = None
+        if use_uw:
+            try:
+                uw_module, _ = build_underwater_enhancement_module(cfg)
+            except Exception:
+                uw_module = None
         return {
             "backbone": backbone,
             "proposal_generator": build_proposal_generator(cfg, output_shape),
@@ -134,7 +146,9 @@ class FixMatchGeneralizedRCNN(GeneralizedRCNN):
             "distillation_loss_weight": cfg.DISTILLATION_LOSS_WEIGHT,
             "det_thresh": cfg.DET_THRESH,
             "box2box_transform": Box2BoxTransform(weights=cfg.MODEL.ROI_BOX_HEAD.BBOX_REG_WEIGHTS),
-            "consistency_reg": cfg.CONSISTENCY_REGULARIZATION
+            "consistency_reg": cfg.CONSISTENCY_REGULARIZATION,
+            "use_underwater_enhancement": use_uw,
+            "underwater_enhancement_module": uw_module,
         }
 
     def custom_preprocess_image(self, batched_inputs, prefix=''):
@@ -179,26 +193,88 @@ class FixMatchGeneralizedRCNN(GeneralizedRCNN):
         return iou
 
     def get_proposal_mask(self, wa_proposals, wa_gt_instances, mask_thresh, iou_mask_=True):
-        new_wa_prop = []
-        masked_prop = []
-        for i in range(len(wa_proposals)):
-            if(iou_mask_):
-                iou_mat = self.get_iou_matrix(wa_proposals[i].get('proposal_boxes').tensor, wa_gt_instances[i].get('gt_boxes').tensor)
-                score_mask = torch.sigmoid(wa_proposals[i].get('objectness_logits')) > mask_thresh
-                iou_mat[iou_mat>0.2] = 10
-                iou_mat[iou_mat<=0.2] = 1
-                iou_mat[iou_mat==10] = 0
-                iou_mask = torch.all(iou_mat.detach(), axis=1)
-                final_mask = score_mask & iou_mask
-                masked_prop.append(wa_proposals[i][final_mask])
-                final_mask = ~final_mask
-                new_wa_prop.append(wa_proposals[i][final_mask])
-            else:
-                score_mask = torch.sigmoid(wa_proposals[i].get('objectness_logits')) > mask_thresh
-                masked_prop.append(wa_proposals[i][score_mask])
-                final_mask = ~score_mask
-                new_wa_prop.append(wa_proposals[i][final_mask])
-        return new_wa_prop, masked_prop
+         # 定义获取提议掩码的函数，根据类别分布动态调整筛选条件
+        new_wa_prop = [] # 初始化一个列表，用于存储新的弱增强提议（未被遮蔽的）
+        masked_prop = [] # 初始化一个列表，用于存储被遮蔽的提议
+
+        # Step 1: 统计每个 batch 的类别频率
+        # Step 1: Statistic class frequencies for each batch
+        # 从所有弱增强的真实实例中收集所有类别ID，并连接成一个张量；如果实例没有gt_classes，则跳过
+        all_classes = torch.cat([inst.gt_classes for inst in wa_gt_instances if inst.has('gt_classes')], dim=0)
+        # 统计所有唯一类别及其出现次数
+        unique_classes, class_counts = torch.unique(all_classes, return_counts=True)
+        total_count = class_counts.sum().float() # 计算所有类别的总计数，并转换为浮点数
+
+        # 初始化类别频率字典，确保在无真实标签时不会出现ZeroDivisionError
+        class_freq = {}
+        if total_count > 0: # 只有当总计数大于0时才计算频率
+            # 为每个唯一类别计算其在当前批次中的频率
+            class_freq = {int(cls.item()): (cnt.float() / total_count).item() for cls, cnt in zip(unique_classes, class_counts)}
+
+        # Step 2: 计算类别权重（低频类别 -> 较大权重；此处用简单反比）
+        # Step 2: Calculate class weights (low frequency classes -> larger weights; using simple inverse here)
+        class_weight = {} # 初始化类别权重字典
+        if class_freq: # 只有当类别频率非空时才计算权重
+            # 为每个类别计算权重，采用频率的反比（例如，如果频率是0.1，权重是10）
+            class_weight = {cls: 1.0 / freq for cls, freq in class_freq.items()}
+
+            # Normalize权重到0~1之间
+            # Normalize weights to between 0 and 1
+            max_w = max(class_weight.values()) # 找到当前批次中最大的权重值
+            for cls in class_weight: # 遍历所有类别权重
+                class_weight[cls] /= max_w  # 将权重归一化，使得最稀有的类别权重为1，其他类别权重小于1
+
+        # Step 3: 遍历每张图片中的 proposals
+        # Step 3: Iterate through proposals in each image
+        for i in range(len(wa_proposals)): # 遍历每个弱增强提议（对应每张图像）
+            proposals = wa_proposals[i] # 获取当前图像的提议
+            gt_boxes = wa_gt_instances[i].gt_boxes # 获取当前图像的真实边界框
+            gt_classes = wa_gt_instances[i].gt_classes # 获取当前图像的真实类别
+
+            if iou_mask_: # 如果启用了IoU遮蔽（即需要根据IoU进行筛选）
+                # 计算当前提议的框与真实边界框之间的IoU矩阵
+                iou_mat = self.get_iou_matrix(proposals.get('proposal_boxes').tensor, gt_boxes.tensor)
+                # 根据对象性分数（经过sigmoid激活）和预设阈值生成分数遮罩
+                score_mask = torch.sigmoid(proposals.get('objectness_logits')) > mask_thresh
+
+                # 初始化 IoU mask 为 True（全通过），表示默认情况下所有提议都通过IoU筛选
+                iou_mask = torch.ones(len(proposals), dtype=torch.bool, device=proposals.get('objectness_logits').device)
+
+                # Step 4: 针对每个 proposal，匹配对应类别后应用类别权重调整遮蔽逻辑
+                # Step 4: For each proposal, apply class weight adjusted masking logic after matching corresponding class
+                if len(gt_classes) > 0 and class_weight: # 只有当存在真实类别且类别权重非空时才进行动态调整
+                    for j in range(len(proposals)): # 遍历当前图像中的每个提议
+                        # 找到当前提议与所有真实框的最大IoU以及对应的真实框索引
+                        max_iou, matched_idx = torch.max(iou_mat[j], dim=0)
+                        matched_cls = int(gt_classes[matched_idx].item()) # 获取匹配到的真实框的类别ID
+                        # 根据匹配到的类别从`class_weight`中获取权重，如果类别不存在则默认权重为1.0
+                        weight = class_weight.get(matched_cls, 1.0)
+
+                        # 动态 IoU 阈值：0.2 * 权重，越稀有类容忍越高 IoU
+                        # Dynamic IoU threshold: 0.2 * weight, rarer classes tolerate higher IoU
+                        # 判断当前提议的最大IoU是否小于等于动态调整后的阈值。如果成立，则该提议通过IoU筛选。
+                        iou_pass = max_iou <= (0.24 * weight)
+                        iou_mask[j] = iou_pass # 设置当前提议的IoU遮蔽结果（True表示通过筛选，False表示被遮蔽）
+                else: # 如果没有真实类别或者类别权重为空，则回退到默认的IoU过滤逻辑
+                    # 原始逻辑：iou_mat[iou_mat>0.2] = 10; iou_mat[iou_mat<=0.2] = 1; iou_mat[iou_mat==10] = 0
+                    # 然后 iou_mask = torch.all(iou_mat.detach(), axis=1)
+                    # 简化为：如果一个proposal与任何gt的IoU大于0.2，则它不通过iou_mask
+                    # 即，只有当所有IoU都小于等于0.2时才通过IoU筛选
+                    iou_pass_threshold = 0.2 # 默认IoU通过阈值
+                    for j in range(len(proposals)): # 遍历当前图像中的每个提议
+                        # 检查当前提议与所有真实框的最大IoU是否小于等于默认阈值
+                        max_iou = torch.max(iou_mat[j]) # 获取最大IoU
+                        iou_mask[j] = max_iou <= iou_pass_threshold # 设置当前提议的IoU遮蔽结果
+
+                final_mask = score_mask & iou_mask # 结合分数遮罩和IoU遮罩，得到最终的遮蔽（逻辑与操作）
+            else: # 如果不启用IoU遮蔽（仅根据对象性分数进行筛选）
+                score_mask = torch.sigmoid(proposals.get('objectness_logits')) > mask_thresh # 仅根据对象性分数生成分数遮罩
+                final_mask = score_mask # 最终遮罩即为分数遮罩
+
+            masked_prop.append(proposals[final_mask]) # 将符合最终遮罩的提议添加到被遮蔽提议列表中
+            new_wa_prop.append(proposals[~final_mask]) # 将不符合最终遮罩（即通过筛选）的提议添加到新的弱增强提议列表中
+
+        return new_wa_prop, masked_prop # 返回新的弱增强提议和被遮蔽的提议
 
     def get_roi_predictions_masked(self, features, proposals):
         if isinstance(self.roi_heads,
@@ -274,8 +350,27 @@ class FixMatchGeneralizedRCNN(GeneralizedRCNN):
             return self.inference(batched_inputs)
         # Weakly augmented images
         wa_images = self.custom_preprocess_image(batched_inputs)
-        # Strongly augmented images
-        sa_images = self.custom_preprocess_image(batched_inputs, prefix='sa_')
+        # Strongly augmented images (with optional underwater enhancement before normalization)
+        uw_loss = None
+        if self.use_underwater_enhancement and self.underwater_enhancement_module is not None:
+            # Batch处理：先对齐图像尺寸，然后batch处理水下增强
+            # 先使用ImageList处理不同尺寸的图像，对齐到相同尺寸
+            sa_images_raw = self.custom_preprocess_image(batched_inputs, prefix='sa_')
+            # 将ImageList转换为tensor（已经是对齐后的）
+            sa_images_tensor = sa_images_raw.tensor  # [B,C,H,W], 范围已归一化
+            
+            # 反归一化到[0,255]，然后归一化到[0,1]供水下模块使用
+            sa_images_0_1 = (sa_images_tensor * self.pixel_std + self.pixel_mean) / 255.0  # [B,C,H,W] -> [0,1]
+            
+            # 一次性batch处理所有图像
+            enhanced_images_batch, uw_loss = self.underwater_enhancement_module(sa_images_0_1)  # [B,C,H,W], scalar
+            
+            # 转换回[0,255]并重新归一化
+            enhanced_images_255 = enhanced_images_batch * 255.0  # back to [0,255]
+            enhanced_norm_list = [(enhanced_images_255[i] - self.pixel_mean) / self.pixel_std for i in range(len(batched_inputs))]
+            sa_images = ImageList.from_tensors(enhanced_norm_list, self.backbone.size_divisibility)
+        else:
+            sa_images = self.custom_preprocess_image(batched_inputs, prefix='sa_')
         wa_gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
         sa_gt_instances = [x["sa_instances"].to(self.device) for x in
                             batched_inputs]
@@ -582,6 +677,10 @@ class FixMatchGeneralizedRCNN(GeneralizedRCNN):
             distillation_loss = 0*mseloss(wa_features['p6'], wa_features['p6'])
             distillation_loss_dict['distillation_loss'] += distillation_loss
             losses.update(distillation_loss_dict)
+
+        # add underwater enhancement loss if enabled
+        if self.use_underwater_enhancement and uw_loss is not None:
+            losses['underwater_enhancement_loss'] = uw_loss
 
         return losses
 

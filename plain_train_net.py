@@ -73,74 +73,70 @@ torch.backends.cudnn.benchmark = False
 torch.backends.cudnn.deterministic = True
 os.environ['PYTHONHASHSEED'] = str(1234)
 
-split1_30p = 'splits/split1_30p.json'
-split1_50p = 'splits/split1_50p.json'
-split1_70p = 'splits/split1_70p.json'
-split2_30p = 'splits/split2_30p.json'
-split2_50p = 'splits/split2_50p.json'
-split2_70p = 'splits/split2_70p.json'
-split3_30p = 'splits/split3_30p.json'
-split3_50p = 'splits/split3_50p.json'
-split3_70p = 'splits/split3_70p.json'
+# DUO dataset paths
+data_root = '/mnt/tengty/FUXIAN/data/DUO'
+train_img_path = os.path.join(data_root, 'images/train')
+test_img_path = os.path.join(data_root, 'images/test')
+train_ann_path = os.path.join(data_root, 'annotations/instances_train.json')
+train_ann_path_sparse_30_50 = os.path.join(data_root, 'annotations/instances_train_sparse_30_50.json')
+train_ann_path_sparse_50_30 = os.path.join(data_root, 'annotations/instances_train_sparse_50_30.json')
+train_ann_path_sparse_80_10 = os.path.join(data_root, 'annotations/instances_train_sparse_80_10.json')
+test_ann_path = os.path.join(data_root, 'annotations/instances_test.json')
 
-train_img_path_coco = <YOUR COCO IMAGE DIR>
-train_ann_path_coco = <YOUR COCO TRAIN JSON>
-val_img_path_coco = <YOUR COCO IMAGE DIR>
-val_ann_path_coco = <YOUR COCO VAL JSON>
+# Register DUO datasets
+register_coco_instances("duo_train", {}, 
+                        train_ann_path, train_img_path)
+register_coco_instances("duo_train_sparse_30_50", {}, 
+                        train_ann_path_sparse_30_50, train_img_path)
+register_coco_instances("duo_train_sparse_50_30", {}, 
+                        train_ann_path_sparse_50_30, train_img_path)
+register_coco_instances("duo_train_sparse_80_10", {}, 
+                        train_ann_path_sparse_80_10, train_img_path)
+register_coco_instances("duo_test", {}, 
+                        test_ann_path, test_img_path)
 
-register_coco_instances("split1_30p", {},
-                        split1_30p, train_img_path_coco)
-register_coco_instances("split1_50p", {},
-                        split1_50p, train_img_path_coco)
-register_coco_instances("split1_70p", {},
-                        split1_70p, train_img_path_coco)
+# RUDO dataset paths
+rudo_data_root = '/mnt/tengty/FUXIAN/data/RUDO'
+rudo_train_img_path = os.path.join(rudo_data_root, 'images/train')
+rudo_test_img_path = os.path.join(rudo_data_root, 'images/test')
+rudo_train_ann_path = os.path.join(rudo_data_root, 'annotations/instances_train.json')
+rudo_train_ann_path_sparse_30_50 = os.path.join(rudo_data_root, 'annotations/instances_train_sparse_30_50.json')
+rudo_train_ann_path_sparse_50_30 = os.path.join(rudo_data_root, 'annotations/instances_train_sparse_50_30.json')
+rudo_train_ann_path_sparse_80_10 = os.path.join(rudo_data_root, 'annotations/instances_train_sparse_80_10.json')
+rudo_test_ann_path = os.path.join(rudo_data_root, 'annotations/instances_test.json')
 
-register_coco_instances("split2_30p", {},
-                        split2_30p, train_img_path_coco)
-register_coco_instances("split2_50p", {},
-                        split2_50p, train_img_path_coco)
-register_coco_instances("split2_70p", {},
-                        split2_70p, train_img_path_coco)
+# Register RUDO datasets (with fallback to full annotations if sparse versions are missing)
+register_coco_instances("rudo_train", {}, 
+                        rudo_train_ann_path, rudo_train_img_path)
+if os.path.exists(rudo_train_ann_path_sparse_30_50):
+    register_coco_instances("rudo_train_sparse_30_50", {}, 
+                            rudo_train_ann_path_sparse_30_50, rudo_train_img_path)
+else:
+    register_coco_instances("rudo_train_sparse_30_50", {}, 
+                            rudo_train_ann_path, rudo_train_img_path)
+if os.path.exists(rudo_train_ann_path_sparse_50_30):
+    register_coco_instances("rudo_train_sparse_50_30", {}, 
+                            rudo_train_ann_path_sparse_50_30, rudo_train_img_path)
+else:
+    register_coco_instances("rudo_train_sparse_50_30", {}, 
+                            rudo_train_ann_path, rudo_train_img_path)
+if os.path.exists(rudo_train_ann_path_sparse_80_10):
+    register_coco_instances("rudo_train_sparse_80_10", {}, 
+                            rudo_train_ann_path_sparse_80_10, rudo_train_img_path)
+else:
+    register_coco_instances("rudo_train_sparse_80_10", {}, 
+                            rudo_train_ann_path, rudo_train_img_path)
+register_coco_instances("rudo_test", {}, 
+                        rudo_test_ann_path, rudo_test_img_path)
 
-register_coco_instances("split3_30p", {},
-                        split3_30p, train_img_path_coco)
-register_coco_instances("split3_50p", {},
-                        split3_50p, train_img_path_coco)
-register_coco_instances("split3_70p", {},
-                        split3_70p, train_img_path_coco)
+# Add class information to metadata
+for dataset_name in ["duo_train", "duo_train_sparse_30_50", "duo_train_sparse_50_30", "duo_train_sparse_80_10", "duo_test"]:
+    MetadataCatalog.get(dataset_name).thing_classes = ["holothurian", "echinus", "scallop", "starfish"]
+    MetadataCatalog.get(dataset_name).evaluator_type = "coco"
 
-register_coco_instances("coco_val", {},
-                        val_ann_path_coco, val_img_path_coco)
-
-split4_easy = 'splits/split4_easy.json'
-split4_hard = 'splits/split4_hard.json'
-split4_extreme = 'splits/split4_extreme.json'
-split5_30p = 'splits/split5_30p.json'
-split5_40p = 'splits/split5_40p.json'
-split5_50p = 'splits/split5_50p.json'
-
-train_img_path_2007 = <YOUR VOC 2007 TRAIN IMAGE DIR>
-train_img_path = <YOUR VOC 2007 and 2012 IMAGE DIR> #for all voc paths are relative to this
-voc_val_json_path =  <YOUR VOC 2007 VAL JSON PATH>
-voc_val_img_path = <YOUR VOC 2007 VAL IMAGE DIR>
-
-register_coco_instances("split4_easy", {},
-                        split4_easy, train_img_path)
-register_coco_instances("split4_hard", {},
-                        split4_hard, train_img_path)
-register_coco_instances("split4_extreme", {},
-                        split4_extreme, train_img_path)
-
-register_coco_instances("split5_30p", {},
-                        split5_30p, train_img_path_2007)
-register_coco_instances("split5_40p", {},
-                        split5_40p, train_img_path_2007)
-register_coco_instances("split5_50p", {},
-                        split5_50p, train_img_path_2007)
-register_coco_instances("voc_test", {},
-                        voc_val_json_path, voc_val_img_path)
-                        
-
+for dataset_name in ["rudo_train", "rudo_train_sparse_30_50", "rudo_train_sparse_50_30", "rudo_train_sparse_80_10", "rudo_test"]:
+    MetadataCatalog.get(dataset_name).thing_classes = ["holothurian", "echinus", "scallop", "starfish", "fish", "corals", "diver", "cuttlefish", "turtle", "jellyfish"]
+    MetadataCatalog.get(dataset_name).evaluator_type = "coco"
 
 def get_evaluator(cfg, dataset_name, output_folder=None):
     """
