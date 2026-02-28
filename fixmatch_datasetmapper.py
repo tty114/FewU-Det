@@ -36,26 +36,7 @@ def draw_bounding_boxes(
 	font_size: int = 10
 ) -> torch.Tensor:
 
-	"""
-	Draws bounding boxes on given image.
-	The values of the input image should be uint8 between 0 and 255.
-	If filled, Resulting Tensor should be saved as PNG image.
-
-	Args:
-		image (Tensor): Tensor of shape (C x H x W)
-		boxes (Tensor): Tensor of size (N, 4) containing bounding boxes in (xmin, ymin, xmax, ymax) format. Note that
-			the boxes are absolute coordinates with respect to the image. In other words: `0 <= xmin < xmax < W` and
-			`0 <= ymin < ymax < H`.
-		labels (List[str]): List containing the labels of bounding boxes.
-		colors (List[Union[str, Tuple[int, int, int]]]): List containing the colors of bounding boxes. The colors can
-			be represented as `str` or `Tuple[int, int, int]`.
-		fill (bool): If `True` fills the bounding box with specified color.
-		width (int): Width of bounding box.
-		font (str): A filename containing a TrueType font. If the file is not found in this filename, the loader may
-			also search in other directories, such as the `fonts/` directory on Windows or `/Library/Fonts/`,
-			`/System/Library/Fonts/` and `~/Library/Fonts/` on macOS.
-		font_size (int): The requested font size in points.
-	"""
+	
 
 	if not isinstance(image, torch.Tensor):
 		raise TypeError(f"Tensor expected, got {type(image)}")
