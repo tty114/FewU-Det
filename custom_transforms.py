@@ -31,17 +31,6 @@ class Custom_Erase(Transform):
     """
 
     def __init__(self, x, y, h, w, v, inplace):
-        """
-        Args:
-            h, w (int): original image size
-            angle (float): degrees for rotation
-            expand (bool): choose if the image should be resized to fit the whole
-                rotated image (default), or simply cropped
-            center (tuple (width, height)): coordinates of the rotation center
-                if left to None, the center will be fit to the center of each image
-                center has no effect if expand=True because it only affects shifting
-            interp: cv2 interpolation method, default cv2.INTER_LINEAR
-        """
         super().__init__()
         self.x = x
         self.y = y
